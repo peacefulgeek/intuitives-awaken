@@ -5,3 +5,8 @@ dist/
 .env.production
 *.log
 .DS_Store
+# Images are served from Bunny CDN — don't commit them
+images/
+images-webp/
+intuitives.db
+*.sqlite
