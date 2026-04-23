@@ -1,0 +1,54 @@
+name: intuitives-awaken
+region: nyc
+services:
+  - name: web
+    github:
+      repo: peacefulgeek/intuitives-awaken
+      branch: main
+      deploy_on_push: true
+    build_command: pnpm install --frozen-lockfile && pnpm build
+    run_command: node scripts/start-with-cron.mjs
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 3000
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 60
+      timeout_seconds: 10
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: PORT
+        value: "3000"
+        scope: RUN_TIME
+      - key: AUTO_GEN_ENABLED
+        value: "true"
+        scope: RUN_TIME
+      - key: AMAZON_TAG
+        value: spankyspinola-20
+        scope: RUN_TIME
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: GH_PAT
+        scope: RUN_TIME
+        type: SECRET
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: FAL_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: BUNNY_STORAGE_ZONE
+        scope: RUN_TIME
+        type: SECRET
+      - key: BUNNY_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: BUNNY_PULL_ZONE_URL
+        scope: RUN_TIME
+        type: SECRET
