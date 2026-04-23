@@ -14,7 +14,7 @@ const cdnUrlsPath = path.join(__dirname, '../src/data/image-cdn-urls.json');
 const cdnUrls = JSON.parse(fs.readFileSync(cdnUrlsPath, 'utf-8'));
 
 const BUNNY = 'https://intuitives-awaken.b-cdn.net';
-const AMAZON_TAG = 'intuitivesawak-20';
+const AMAZON_TAG = 'spankyspinola-20';
 
 // Category mapping
 const CATEGORY_MAP = {
