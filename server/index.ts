@@ -24,6 +24,20 @@ async function createServer() {
   // Health check FIRST — must work even if other routes fail
   app.use('/health', healthRouter);
 
+  // www → non-www 301 redirect (must be before all other routes)
+  // Skipped in dev so localhost works fine
+  if (!isDev) {
+    app.use((req, res, next) => {
+      const host = req.headers.host || '';
+      if (host.startsWith('www.')) {
+        const bare = host.slice(4); // strip 'www.'
+        const proto = req.headers['x-forwarded-proto'] || 'https';
+        return res.redirect(301, `${proto}://${bare}${req.originalUrl}`);
+      }
+      next();
+    });
+  }
+
   // API routes
   app.use('/api/articles', articlesRouter);
   app.use('/sitemap.xml', sitemapRouter);
