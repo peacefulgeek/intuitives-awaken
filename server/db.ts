@@ -26,6 +26,8 @@ export function getDb(): pg.Pool {
 
 export async function initDb(): Promise<void> {
   const db = getDb();
+
+  // Create articles table with full queue-system schema
   await db.query(`
     CREATE TABLE IF NOT EXISTS articles (
       id SERIAL PRIMARY KEY,
@@ -41,8 +43,10 @@ export async function initDb(): Promise<void> {
       image_alt TEXT,
       reading_time INTEGER DEFAULT 8,
       author VARCHAR(100) DEFAULT 'Kalesh',
-      published BOOLEAN DEFAULT true,
+      -- Queue system: status replaces boolean published
+      status VARCHAR(20) DEFAULT 'published' CHECK (status IN ('queued','published','archived')),
       published_at TIMESTAMPTZ DEFAULT NOW(),
+      queued_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       word_count INTEGER,
       asins_used TEXT[],
@@ -51,6 +55,38 @@ export async function initDb(): Promise<void> {
       opener_type VARCHAR(50),
       conclusion_type VARCHAR(50)
     );
+
+    -- Migrate legacy boolean published column if it exists
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='articles' AND column_name='published' AND data_type='boolean'
+      ) THEN
+        -- Add status column if not already there
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='articles' AND column_name='status'
+        ) THEN
+          ALTER TABLE articles ADD COLUMN status VARCHAR(20) DEFAULT 'published'
+            CHECK (status IN ('queued','published','archived'));
+          UPDATE articles SET status = CASE WHEN published = true THEN 'published' ELSE 'archived' END;
+        END IF;
+        -- Drop the old boolean column
+        ALTER TABLE articles DROP COLUMN IF EXISTS published;
+      END IF;
+    END $$;
+
+    -- Add queued_at column if missing (migration for existing deployments)
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='articles' AND column_name='queued_at'
+      ) THEN
+        ALTER TABLE articles ADD COLUMN queued_at TIMESTAMPTZ DEFAULT NOW();
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS quizzes (
       id SERIAL PRIMARY KEY,
@@ -62,9 +98,19 @@ export async function initDb(): Promise<void> {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS asin_health_log (
+      id SERIAL PRIMARY KEY,
+      checked_at TIMESTAMPTZ DEFAULT NOW(),
+      total INTEGER,
+      passed INTEGER,
+      failed INTEGER,
+      failed_asins JSONB
+    );
+
     CREATE INDEX IF NOT EXISTS idx_articles_slug ON articles(slug);
     CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category);
     CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
   `);
-  console.log('[db] Schema initialized');
+  console.log('[db] Schema initialized (queue-system v2)');
 }

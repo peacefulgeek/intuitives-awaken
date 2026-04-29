@@ -1,69 +1,83 @@
-import { runQualityGate } from '../lib/article-quality-gate.mjs';
-import { buildAmazonUrl } from '../lib/amazon-verify.mjs';
-import { query } from '../lib/db.mjs';
-import { PRODUCT_CATALOG } from '../data/product-catalog.mjs';
-import Anthropic from '@anthropic-ai/sdk';
+/**
+ * Product Spotlight Cron — Saturdays 08:00 UTC
+ * Uses DeepSeek V4-Pro + Paul Voice Gate + assignHeroImage.
+ * Inserts directly as status='published'.
+ */
+import pg from 'pg';
+import OpenAI from 'openai';
+import { runQualityGate, fixEmDashes } from '../lib/article-quality-gate.mjs';
+import { assignHeroImage } from '../lib/bunny-image-library.mjs';
+import { ASIN_POOL, AMAZON_TAG } from '../data/asin-pool.mjs';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MAX_ATTEMPTS = 3;
+const { Pool } = pg;
+const MAX_ATTEMPTS = 4;
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || 'https://api.deepseek.com',
+});
+const MODEL = process.env.OPENAI_MODEL || 'deepseek-v4-pro';
+
+function getDb() {
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL?.includes('sslmode=require') ? { rejectUnauthorized: false } : false,
+  });
+}
 
 export async function runProductSpotlight() {
-  // Pick a product not recently spotlighted
-  const { rows: recent } = await query(
-    "SELECT title FROM articles WHERE category = 'product-spotlight' ORDER BY published_at DESC LIMIT 10"
-  );
-  const recentNames = new Set(recent.map(r => r.title.toLowerCase()));
-  const available = PRODUCT_CATALOG.filter(p => !recentNames.has(p.name.toLowerCase()));
-  const product = available.length > 0
-    ? available[Math.floor(Math.random() * available.length)]
-    : PRODUCT_CATALOG[Math.floor(Math.random() * PRODUCT_CATALOG.length)];
+  if (process.env.AUTO_GEN_ENABLED !== 'true') return;
+  const db = getDb();
+  try {
+    const uniqueAsins = [...new Set(ASIN_POOL)];
+    const asin = uniqueAsins[Math.floor(Math.random() * uniqueAsins.length)];
+    const title = 'Product Spotlight: Our Pick for Psychic Development This Week';
+    let body = '';
+    let gateResult = null;
 
-  console.log(`[product-spotlight] Spotlighting: ${product.name}`);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      console.log(`[product-spotlight] Generating (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      try {
+        const response = await client.chat.completions.create({
+          model: MODEL,
+          messages: [
+            { role: 'system', content: 'You are Kalesh, a grounded teacher of psychic development. Write honest, direct product reviews. Use "you" throughout. Use contractions. Include 2-3 of these markers: "Right?!", "Know what I mean?", "Does that land?". No em-dashes. No banned words. Output clean HTML only.' },
+            { role: 'user', content: `Write a 1,400-1,800 word product spotlight for psychic development. Feature: https://www.amazon.com/dp/${asin}?tag=${AMAZON_TAG} (paid link). Also mention 2-3 related products: ${uniqueAsins.slice(0, 5).map(a => `https://www.amazon.com/dp/${a}?tag=${AMAZON_TAG}`).join(', ')}. Format all links as: <a href="URL" target="_blank" rel="nofollow sponsored">Product Name (paid link)</a>. End with a link to /assessment.` },
+          ],
+          temperature: 0.72,
+        });
+        body = response.choices[0].message.content || '';
+        body = fixEmDashes(body);
+        gateResult = runQualityGate(body);
+        if (gateResult.passed) break;
+        console.warn(`[product-spotlight] Gate FAILED (attempt ${attempt}): ${gateResult.failures.join(', ')}`);
+        body = '';
+      } catch (err) {
+        console.error(`[product-spotlight] Error (attempt ${attempt}):`, err.message);
+      }
+    }
 
-  const prompt = `Write a 1,600-1,800 word article for "The Bright Wound" spotlighting this product for psychically sensitive people:
+    if (!gateResult?.passed || !body) { console.error('[product-spotlight] All attempts failed.'); return; }
 
-Product: ${product.name}
-Amazon URL: ${buildAmazonUrl(product.asin)} (paid link)
+    const slug = `product-spotlight-${Date.now()}`;
+    const imageUrl = await assignHeroImage(slug);
+    const metaDesc = 'Kalesh reviews the best tools for psychic development and intuitive sensitivity this week.';
 
-Write as Kalesh - grounded, analytical, not woo. Explain why this specific product matters for people with high sensitivity or psychic development practice. Be specific. Be honest about limitations.
-
-Structure:
-- H1 title (not just the product name - make it about the benefit)
-- Opening paragraph (gut-punch or micro-story)
-- 3-4 H2 sections covering: what it is, why it matters for sensitive people, how to use it, what to watch out for
-- 2-3 additional related product recommendations with Amazon links (paid link)
-- Practical FAQ (3 questions)
-- Conclusion
-
-HARD RULES: Zero em-dashes. No AI words (delve, tapestry, utilize, etc). Contractions throughout. Varied sentence lengths. 1,600-1,800 words. Return valid HTML.`;
-
-  let body = null;
-  let gate = null;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const response = await client.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: 3000,
-      messages: [{ role: 'user', content: prompt }]
-    });
-    body = response.content[0].type === 'text' ? response.content[0].text : '';
-    gate = runQualityGate(body);
-    if (gate.passed) break;
-    console.warn(`[product-spotlight] Attempt ${attempt} failed:`, gate.failures.join(' | '));
+    await db.query(
+      `INSERT INTO articles (slug, title, meta_description, og_title, og_description, category, tags, body, image_url, image_alt, reading_time, author, status, published_at, queued_at, updated_at, word_count, asins_used)
+       VALUES ($1,$2,$3,$4,$5,'psychic-development',ARRAY['product','review','tools'],$6,$7,$8,$9,'Kalesh','published',NOW(),NOW(),NOW(),$10,ARRAY[$11])
+       ON CONFLICT (slug) DO NOTHING`,
+      [slug, title, metaDesc, title, metaDesc, body, imageUrl, `${title} -- intuitivesawaken.com`,
+       Math.round(gateResult.wordCount / 200), gateResult.wordCount, asin]
+    );
+    console.log(`[product-spotlight] Published: ${slug}`);
+  } catch (err) {
+    console.error('[product-spotlight] Error:', err);
+  } finally {
+    await db.end();
   }
+}
 
-  if (!gate || !gate.passed) {
-    console.error('[product-spotlight] All attempts failed — not storing');
-    return null;
-  }
-
-  const slug = `spotlight-${product.asin.toLowerCase()}-${Date.now()}`;
-  await query(`
-    INSERT INTO articles (slug, title, body, category, tags, author, word_count, asins_used, published_at)
-    VALUES ($1, $2, $3, 'product-spotlight', $4, 'Kalesh', $5, $6, NOW())
-    ON CONFLICT (slug) DO NOTHING
-  `, [slug, `The Sensitive's Toolkit: ${product.name}`, body, product.tags, gate.wordCount, gate.asins]);
-
-  console.log(`[product-spotlight] Stored: ${slug}`);
-  return slug;
+if (process.argv[1] === new URL(import.meta.url).pathname) {
+  runProductSpotlight().catch(console.error);
 }

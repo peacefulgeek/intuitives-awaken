@@ -31,24 +31,27 @@ services:
       - key: AMAZON_TAG
         value: spankyspinola-20
         scope: RUN_TIME
+      # DeepSeek V4-Pro via OpenAI-compatible API
+      - key: OPENAI_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: OPENAI_BASE_URL
+        value: "https://api.deepseek.com"
+        scope: RUN_TIME
+      - key: OPENAI_MODEL
+        value: "deepseek-chat"
+        scope: RUN_TIME
+      # Database
       - key: DATABASE_URL
         scope: RUN_TIME
         type: SECRET
-      - key: GH_PAT
-        scope: RUN_TIME
-        type: SECRET
-      - key: ANTHROPIC_API_KEY
-        scope: RUN_TIME
-        type: SECRET
-      - key: FAL_KEY
-        scope: RUN_TIME
-        type: SECRET
+      # Bunny CDN (hardcoded in bunny-image-library.mjs but also available as env vars)
       - key: BUNNY_STORAGE_ZONE
+        value: intuitives-awaken
         scope: RUN_TIME
-        type: SECRET
       - key: BUNNY_API_KEY
+        value: "1eb8ae9c-45fd-4203-ad710a9a76d5-13d8-47a8"
         scope: RUN_TIME
-        type: SECRET
       - key: BUNNY_PULL_ZONE_URL
+        value: "https://intuitives-awaken.b-cdn.net"
         scope: RUN_TIME
-        type: SECRET

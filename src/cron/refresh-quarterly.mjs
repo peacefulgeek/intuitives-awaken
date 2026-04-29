@@ -1,70 +1,72 @@
-import { runQualityGate } from '../lib/article-quality-gate.mjs';
-import { verifyAsin, extractAsinsFromText } from '../lib/amazon-verify.mjs';
-import { query } from '../lib/db.mjs';
-import Anthropic from '@anthropic-ai/sdk';
+/**
+ * Quarterly Refresh Cron — Jan/Apr/Jul/Oct 1st 04:00 UTC
+ * Deep-rewrites articles older than 90 days.
+ * Uses DeepSeek V4-Pro.
+ */
+import pg from 'pg';
+import OpenAI from 'openai';
+import { runQualityGate, fixEmDashes } from '../lib/article-quality-gate.mjs';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MAX_ATTEMPTS = 3;
-const BATCH_SIZE = 15;
+const { Pool } = pg;
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || 'https://api.deepseek.com',
+});
+const MODEL = process.env.OPENAI_MODEL || 'deepseek-v4-pro';
 
-export async function refreshQuarterly() {
-  const { rows } = await query(`
-    SELECT id, slug, title, body, category, tags, asins_used
-    FROM articles
-    WHERE last_refreshed_90d IS NULL OR last_refreshed_90d < NOW() - INTERVAL '90 days'
-    ORDER BY COALESCE(last_refreshed_90d, created_at) ASC
-    LIMIT $1
-  `, [BATCH_SIZE]);
-
-  console.log(`[refresh-quarterly] Processing ${rows.length} articles`);
-  let refreshed = 0, kept = 0;
-
-  for (const a of rows) {
-    let refreshedBody = null;
-    let gate = null;
-
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      refreshedBody = await generateQuarterlyRefresh(a);
-
-      const asins = extractAsinsFromText(refreshedBody);
-      const dead = (await Promise.all(asins.map(verifyAsin))).filter(r => !r.valid);
-      if (dead.length > 0) {
-        console.warn(`[refresh-quarterly] ${a.slug}: ${dead.length} dead ASINs`);
-      }
-
-      gate = runQualityGate(refreshedBody);
-      if (gate.passed) break;
-      console.warn(`[refresh-quarterly] ${a.slug} attempt ${attempt}:`, gate.failures.join(' | '));
-    }
-
-    if (gate && gate.passed) {
-      await query(
-        'UPDATE articles SET body = $1, asins_used = $2, word_count = $3, last_refreshed_90d = NOW(), updated_at = NOW() WHERE id = $4',
-        [refreshedBody, gate.asins, gate.wordCount, a.id]
-      );
-      refreshed++;
-    } else {
-      await query('UPDATE articles SET last_refreshed_90d = NOW() WHERE id = $1', [a.id]);
-      kept++;
-      console.error(`[refresh-quarterly] ${a.slug} FAILED gate 3x - keeping original`);
-    }
-  }
-
-  return { processed: rows.length, refreshed, kept };
+function getDb() {
+  return new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL?.includes('sslmode=require') ? { rejectUnauthorized: false } : false,
+  });
 }
 
-async function generateQuarterlyRefresh(article) {
-  const prompt = `Substantially rewrite this article for "The Bright Wound." New hook, new examples, refreshed product recommendations. Same niche (psychic development, intuition, empathic sensitivity), same voice (Kalesh - grounded, analytical, not woo), same approximate length.
+export async function runQuarterlyRefresh() {
+  if (process.env.AUTO_GEN_ENABLED !== 'true') return;
+  const db = getDb();
+  try {
+    const { rows } = await db.query(
+      `SELECT id, slug, title, body, category FROM articles
+       WHERE status = 'published'
+         AND (last_refreshed_90d IS NULL OR last_refreshed_90d < NOW() - INTERVAL '90 days')
+       ORDER BY published_at ASC LIMIT 5`
+    );
+    console.log(`[refresh-quarterly] Found ${rows.length} articles to deep-refresh`);
 
-Title: ${article.title}
-Current body: ${article.body.substring(0, 1500)}...
+    for (const article of rows) {
+      console.log(`[refresh-quarterly] Deep-refreshing: ${article.slug}`);
+      try {
+        const response = await client.chat.completions.create({
+          model: MODEL,
+          messages: [
+            { role: 'system', content: 'You are Kalesh. Completely rewrite this article from scratch keeping only the core topic. Make it longer, deeper, more authoritative. Direct address, contractions, no em-dashes, no banned words. 1,800-2,200 words. Output clean HTML.' },
+            { role: 'user', content: `Completely rewrite this article on the topic: "${article.title}". Make it definitive, comprehensive, and deeply useful for people developing their psychic sensitivity.` },
+          ],
+          temperature: 0.68,
+        });
+        let newBody = response.choices[0].message.content || '';
+        newBody = fixEmDashes(newBody);
+        const gate = runQualityGate(newBody);
+        if (gate.passed) {
+          await db.query(
+            `UPDATE articles SET body = $1, word_count = $2, last_refreshed_90d = NOW(), updated_at = NOW() WHERE id = $3`,
+            [newBody, gate.wordCount, article.id]
+          );
+          console.log(`[refresh-quarterly] Deep-refreshed: ${article.slug}`);
+        } else {
+          console.warn(`[refresh-quarterly] Gate failed for ${article.slug}: ${gate.failures.join(', ')}`);
+        }
+      } catch (err) {
+        console.error(`[refresh-quarterly] Error for ${article.slug}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[refresh-quarterly] Error:', err);
+  } finally {
+    await db.end();
+  }
+}
 
-HARD RULES: Zero em-dashes. No AI words (delve, tapestry, utilize, etc). Contractions throughout. Varied sentence lengths. 1,600-2,000 words. 3-4 Amazon affiliate links with (paid link). Return valid HTML.`;
-
-  const response = await client.messages.create({
-    model: 'claude-opus-4-5',
-    max_tokens: 4096,
-    messages: [{ role: 'user', content: prompt }]
-  });
-  return response.content[0].type === 'text' ? response.content[0].text : article.body;
+if (process.argv[1] === new URL(import.meta.url).pathname) {
+  runQuarterlyRefresh().catch(console.error);
 }

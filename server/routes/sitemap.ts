@@ -11,7 +11,7 @@ sitemapRouter.get('/', async (_req, res) => {
     const { rows } = await db.query(`
       SELECT slug, published_at, updated_at
       FROM articles
-      WHERE published = true
+      WHERE status = 'published'
       ORDER BY published_at DESC
     `);
 

@@ -1,7 +1,22 @@
+/**
+ * Cron Host + Server Launcher
+ * 
+ * Phase 1 (published < 60): Article generation runs 5x/day
+ *   07:00, 10:00, 13:00, 16:00, 19:00 UTC
+ * Phase 2 (published >= 60): Article generation runs 1x/weekday
+ *   08:00 UTC Mon-Fri
+ * 
+ * Other crons:
+ * - Product spotlight: Saturdays 08:00 UTC
+ * - Monthly refresh: 1st of month 03:00 UTC
+ * - Quarterly refresh: Jan/Apr/Jul/Oct 1st 04:00 UTC
+ * - ASIN health check: Sundays 05:00 UTC
+ */
 import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import pg from 'pg';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,66 +46,85 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
+// ─── Phase detection ─────────────────────────────────────────
+async function getPublishedCount() {
+  if (!process.env.DATABASE_URL) return 0;
+  const { Pool } = pg;
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  try {
+    const { rows } = await pool.query("SELECT COUNT(*) FROM articles WHERE status = 'published'");
+    return parseInt(rows[0].count, 10);
+  } catch { return 0; } finally { await pool.end(); }
+}
+
 // ─── Cron schedules (all UTC) ─────────────────────────────────
-// Only run if AUTO_GEN_ENABLED=true
 const AUTO_GEN = process.env.AUTO_GEN_ENABLED === 'true';
 
 if (AUTO_GEN) {
   console.log('[cron-host] AUTO_GEN_ENABLED — scheduling all crons');
 
-  // Cron #1 — New article Mon-Fri 06:00 UTC
-  cron.schedule('0 6 * * 1-5', async () => {
-    console.log('[cron-1] Generating daily article');
-    try {
-      const { generateAndStore } = await import('../src/cron/generate-article.mjs');
-      await generateAndStore();
-    } catch (err) {
-      console.error('[cron-1] Error:', err.message);
+  // Phase 1: 5x/day — 07, 10, 13, 16, 19 UTC (runs when published < 60)
+  cron.schedule('0 7,10,13,16,19 * * *', async () => {
+    const count = await getPublishedCount();
+    if (count >= 60) {
+      console.log(`[cron-1] Phase 2 active (${count} published) — skipping midday runs`);
+      return;
     }
+    console.log(`[cron-1] Phase 1 (${count} published) — generating article`);
+    try {
+      const { runGenerateArticle } = await import('../src/cron/generate-article.mjs');
+      await runGenerateArticle();
+    } catch (err) { console.error('[cron-1] Error:', err.message); }
   });
 
-  // Cron #2 — Product spotlight Saturdays 08:00 UTC
+  // Phase 2: 1x/weekday — 08:00 UTC Mon-Fri (runs when published >= 60)
+  cron.schedule('0 8 * * 1-5', async () => {
+    const count = await getPublishedCount();
+    if (count < 60) {
+      console.log(`[cron-2] Phase 1 active (${count} published) — 08:00 run handled by 5x/day cron`);
+      return;
+    }
+    console.log(`[cron-2] Phase 2 (${count} published) — generating article`);
+    try {
+      const { runGenerateArticle } = await import('../src/cron/generate-article.mjs');
+      await runGenerateArticle();
+    } catch (err) { console.error('[cron-2] Error:', err.message); }
+  });
+
+  // Product spotlight — Saturdays 08:00 UTC
   cron.schedule('0 8 * * 6', async () => {
-    console.log('[cron-2] Generating product spotlight');
+    console.log('[cron-3] Generating product spotlight');
     try {
       const { runProductSpotlight } = await import('../src/cron/product-spotlight.mjs');
       await runProductSpotlight();
-    } catch (err) {
-      console.error('[cron-2] Error:', err.message);
-    }
+    } catch (err) { console.error('[cron-3] Error:', err.message); }
   });
 
-  // Cron #3 — Monthly refresh 1st of month 03:00 UTC
+  // Monthly refresh — 1st of month 03:00 UTC
   cron.schedule('0 3 1 * *', async () => {
-    console.log('[cron-3] Running monthly refresh');
+    console.log('[cron-4] Running monthly refresh');
     try {
-      const { refreshMonthly } = await import('../src/cron/refresh-monthly.mjs');
-      await refreshMonthly();
-    } catch (err) {
-      console.error('[cron-3] Error:', err.message);
-    }
+      const { runMonthlyRefresh } = await import('../src/cron/refresh-monthly.mjs');
+      await runMonthlyRefresh();
+    } catch (err) { console.error('[cron-4] Error:', err.message); }
   });
 
-  // Cron #4 — Quarterly refresh Jan/Apr/Jul/Oct 1st 04:00 UTC
+  // Quarterly refresh — Jan/Apr/Jul/Oct 1st 04:00 UTC
   cron.schedule('0 4 1 1,4,7,10 *', async () => {
-    console.log('[cron-4] Running quarterly refresh');
+    console.log('[cron-5] Running quarterly refresh');
     try {
-      const { refreshQuarterly } = await import('../src/cron/refresh-quarterly.mjs');
-      await refreshQuarterly();
-    } catch (err) {
-      console.error('[cron-4] Error:', err.message);
-    }
+      const { runQuarterlyRefresh } = await import('../src/cron/refresh-quarterly.mjs');
+      await runQuarterlyRefresh();
+    } catch (err) { console.error('[cron-5] Error:', err.message); }
   });
 
-  // Cron #5 — ASIN health check Sundays 05:00 UTC
+  // ASIN health check — Sundays 05:00 UTC
   cron.schedule('0 5 * * 0', async () => {
-    console.log('[cron-5] Running ASIN health check');
+    console.log('[cron-6] Running ASIN health check');
     try {
       const { runAsinHealthCheck } = await import('../src/cron/asin-health-check.mjs');
       await runAsinHealthCheck();
-    } catch (err) {
-      console.error('[cron-5] Error:', err.message);
-    }
+    } catch (err) { console.error('[cron-6] Error:', err.message); }
   });
 
 } else {
