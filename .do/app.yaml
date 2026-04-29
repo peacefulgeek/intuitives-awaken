@@ -33,19 +33,20 @@ services:
         scope: RUN_TIME
       # DeepSeek V4-Pro via OpenAI-compatible API
       - key: OPENAI_API_KEY
+        value: sk-82bdad0a1fd34987b73030504ae67080
         scope: RUN_TIME
         type: SECRET
       - key: OPENAI_BASE_URL
         value: "https://api.deepseek.com"
         scope: RUN_TIME
       - key: OPENAI_MODEL
-        value: "deepseek-chat"
+        value: "deepseek-v4-pro"
         scope: RUN_TIME
       # Database
       - key: DATABASE_URL
         scope: RUN_TIME
         type: SECRET
-      # Bunny CDN (hardcoded in bunny-image-library.mjs but also available as env vars)
+      # Bunny CDN
       - key: BUNNY_STORAGE_ZONE
         value: intuitives-awaken
         scope: RUN_TIME
