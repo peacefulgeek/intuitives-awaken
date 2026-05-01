@@ -1,19 +1,13 @@
 import express from 'express';
-import { getDb } from '../db.js';
+import { getPublishedIndex } from '../db.js';
 
 export const sitemapRouter = express.Router();
 
 const DOMAIN = 'https://intuitivesawaken.com';
 
-sitemapRouter.get('/', async (_req, res) => {
+sitemapRouter.get('/', (_req, res) => {
   try {
-    const db = getDb();
-    const { rows } = await db.query(`
-      SELECT slug, published_at, updated_at
-      FROM articles
-      WHERE status = 'published'
-      ORDER BY published_at DESC
-    `);
+    const rows = getPublishedIndex();
 
     const staticPages = [
       { url: '/', priority: '1.0', changefreq: 'weekly' },
@@ -33,7 +27,7 @@ sitemapRouter.get('/', async (_req, res) => {
       ...rows.map(a => `
   <url>
     <loc>${DOMAIN}/articles/${a.slug}</loc>
-    <lastmod>${new Date(a.updated_at || a.published_at).toISOString().split('T')[0]}</lastmod>
+    <lastmod>${new Date(a.published_at || Date.now()).toISOString().split('T')[0]}</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>`)

@@ -42,10 +42,6 @@ services:
       - key: OPENAI_MODEL
         value: "deepseek-v4-pro"
         scope: RUN_TIME
-      # Database
-      - key: DATABASE_URL
-        scope: RUN_TIME
-        type: SECRET
       # Bunny CDN
       - key: BUNNY_STORAGE_ZONE
         value: intuitives-awaken

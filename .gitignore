@@ -10,3 +10,6 @@ images/
 images-webp/
 intuitives.db
 *.sqlite
+preseed.db
+preseed.log
+*.db
